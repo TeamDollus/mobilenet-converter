@@ -32,6 +32,7 @@ PRETRAINED_CHECKPOINT = 'mobilenet_v1_1.0_224'
 PRETRAINED_CHECKPOINT_NAME = 'MobilenetV1'
 PRETRAINED_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, '{}.ckpt'.format(PRETRAINED_CHECKPOINT))
 RESULT_MODEL_NAME = '{}_lightspeeur.h5'.format(PRETRAINED_CHECKPOINT)
+RESULT_FOLDED_MODEL_NAME = '{}_lightspeeur_folded.h5'.format(PRETRAINED_CHECKPOINT)
 CONVOLUTION_MAP = {
     'Conv2d_0': 'conv1_1',
     'Conv2d_1_depthwise': 'conv2_1_dw',
@@ -70,71 +71,83 @@ filename = wget.download('http://download.tensorflow.org/models/mobilenet_v1_201
 subprocess.run(['tar', '-xvf', filename, '-C', CHECKPOINT_DIR])
 
 
-def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), name=None):
+def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), folded_shape=False, name=None):
     outputs = Conv2D(units,
                      kernel_size,
                      CHIP_ID,
                      strides=strides,
-                     bit_mask=12,
-                     use_bias=False,
+                     bit_mask=2,
+                     use_bias=folded_shape,
+                     quantize=folded_shape,
                      name='{}/{}'.format(name, 'conv'))(inputs)
     outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
-    outputs = ReLU(CHIP_ID, name=name)(outputs)
+    outputs = ReLU(CHIP_ID, name='{}/{}'.format(name, 'relu'))(outputs)
     return outputs
 
 
-def depthwise_conv_block(inputs, strides=(1, 1), name=None):
+def depthwise_conv_block(inputs, strides=(1, 1), folded_shape=False, name=None):
     outputs = DepthwiseConv2D(CHIP_ID,
                               strides=strides,
-                              bit_mask=12,
-                              use_bias=False,
+                              bit_mask=2,
+                              use_bias=folded_shape,
+                              quantize=folded_shape,
                               name='{}/{}'.format(name, 'conv'))(inputs)
     outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
-    outputs = ReLU(CHIP_ID, name=name)(outputs)
+    outputs = ReLU(CHIP_ID, name='{}/{}'.format(name, 'relu'))(outputs)
     return outputs
 
 
-def build_mobilenet(inputs):
-    outputs = conv_block(inputs, 32, kernel_size=(3, 3), strides=(2, 2), name='conv1_1')
+def build_mobilenet(folded_shape=False):
+    inputs = Input(shape=(224, 224, 3))
+    outputs = conv_block(inputs, 32, kernel_size=(3, 3), strides=(2, 2), folded_shape=folded_shape, name='conv1_1')
     for layer in MOBILENET_DEPTHWISE_CONV_LAYERS:
-        outputs = depthwise_conv_block(outputs, (layer.stride, layer.stride), name='{}_dw'.format(layer.name))
-        outputs = conv_block(outputs, layer.out_channels, name='{}_pw'.format(layer.name))
-    outputs = GlobalAveragePooling2D()(outputs)
-    outputs = Flatten()(outputs)
-    outputs = Dense(1024, activation='relu')(outputs)
-    outputs = Dense(5, activation='softmax')(outputs)
+        outputs = depthwise_conv_block(outputs, (layer.stride, layer.stride), folded_shape=folded_shape, name='{}_dw'.format(layer.name))
+        outputs = conv_block(outputs, layer.out_channels, folded_shape=folded_shape, name='{}_pw'.format(layer.name))
+    outputs = GlobalAveragePooling2D(name='global_average_pooling')(outputs)
+    outputs = Flatten(name='flatten')(outputs)
+    outputs = Dense(1024, activation='relu', name='fc')(outputs)
+    outputs = Dense(5, activation='softmax', name='classes')(outputs)
 
     return Model(name='MobileNetV1', inputs=inputs, outputs=outputs)
 
 
 print('Organizing lightspeeur MobileNetV1 model...')
-initial_model = build_mobilenet(Input(shape=(224, 224, 3)))
+initial_model = build_mobilenet()
+folded_model = build_mobilenet(folded_shape=True)
 
 print('Converting pre-trained TensorFlow checkpoint to Lightspeeur format...')
-reader = tf.compat.v1.train.NewCheckpointReader(PRETRAINED_CHECKPOINT_PATH)
-for src_layer_name, dst_layer_name in CONVOLUTION_MAP.items():
-    batch_norm_scope = '{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'BatchNorm')
-    if 'depthwise' in src_layer_name:
-        conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'depthwise_weights'))
-    else:
-        conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'weights'))
 
-    batch_moving_mean = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_mean'))
-    batch_moving_variance = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_variance'))
-    batch_gamma = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'gamma'))
-    batch_beta = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'beta'))
 
-    conv_layer = initial_model.get_layer('{}/{}'.format(dst_layer_name, 'conv'))
+def load_weights(model):
+    reader = tf.compat.v1.train.NewCheckpointReader(PRETRAINED_CHECKPOINT_PATH)
+    for src_layer_name, dst_layer_name in CONVOLUTION_MAP.items():
+        batch_norm_scope = '{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'BatchNorm')
+        if 'depthwise' in src_layer_name:
+            conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'depthwise_weights'))
+        else:
+            conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'weights'))
 
-    if conv_layer.use_bias:
-        conv_bias = conv_layer.get_weights()[1]
-        conv_layer.set_weights([conv_weights, conv_bias])
-    else:
-        conv_layer.set_weights([conv_weights])
+        batch_moving_mean = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_mean'))
+        batch_moving_variance = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_variance'))
+        batch_gamma = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'gamma'))
+        batch_beta = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'beta'))
 
-    batch_weights = [batch_gamma, batch_beta, batch_moving_mean, batch_moving_variance]
-    batch_layer = initial_model.get_layer('{}/{}'.format(dst_layer_name, 'batch_norm'))
-    batch_layer.set_weights(batch_weights)
+        conv_layer = model.get_layer('{}/{}'.format(dst_layer_name, 'conv'))
+
+        if conv_layer.use_bias:
+            conv_bias = conv_layer.get_weights()[1]
+            conv_layer.set_weights([conv_weights, conv_bias])
+        else:
+            conv_layer.set_weights([conv_weights])
+
+        batch_weights = [batch_gamma, batch_beta, batch_moving_mean, batch_moving_variance]
+        batch_layer = model.get_layer('{}/{}'.format(dst_layer_name, 'batch_norm'))
+        batch_layer.set_weights(batch_weights)
+
+
+load_weights(initial_model)
+load_weights(folded_model)
 
 initial_model.save(RESULT_MODEL_NAME)
+folded_model.save(RESULT_FOLDED_MODEL_NAME)
 print('All jobs have finished')
