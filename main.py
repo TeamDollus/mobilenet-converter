@@ -120,19 +120,13 @@ folded_model = build_mobilenet(folded_shape=True)
 print('Converting pre-trained TensorFlow checkpoint to Lightspeeur format...')
 
 
-def load_weights(model):
+def load_weights(model, folded_shape=False):
     reader = tf.compat.v1.train.NewCheckpointReader(PRETRAINED_CHECKPOINT_PATH)
     for src_layer_name, dst_layer_name in CONVOLUTION_MAP.items():
-        batch_norm_scope = '{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'BatchNorm')
         if 'depthwise' in src_layer_name:
             conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'depthwise_weights'))
         else:
             conv_weights = reader.get_tensor('{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'weights'))
-
-        batch_moving_mean = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_mean'))
-        batch_moving_variance = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_variance'))
-        batch_gamma = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'gamma'))
-        batch_beta = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'beta'))
 
         conv_layer = model.get_layer('{}/{}'.format(dst_layer_name, 'conv'))
 
@@ -142,13 +136,20 @@ def load_weights(model):
         else:
             conv_layer.set_weights([conv_weights])
 
-        batch_weights = [batch_gamma, batch_beta, batch_moving_mean, batch_moving_variance]
-        batch_layer = model.get_layer('{}/{}'.format(dst_layer_name, 'batch_norm'))
-        batch_layer.set_weights(batch_weights)
+        if not folded_shape:
+            batch_norm_scope = '{}/{}/{}'.format(PRETRAINED_CHECKPOINT_NAME, src_layer_name, 'BatchNorm')
+            batch_moving_mean = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_mean'))
+            batch_moving_variance = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'moving_variance'))
+            batch_gamma = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'gamma'))
+            batch_beta = reader.get_tensor('{}/{}'.format(batch_norm_scope, 'beta'))
+
+            batch_weights = [batch_gamma, batch_beta, batch_moving_mean, batch_moving_variance]
+            batch_layer = model.get_layer('{}/{}'.format(dst_layer_name, 'batch_norm'))
+            batch_layer.set_weights(batch_weights)
 
 
 load_weights(initial_model)
-load_weights(folded_model)
+load_weights(folded_model, folded_shape=True)
 
 initial_model.save(RESULT_MODEL_NAME)
 folded_model.save(RESULT_FOLDED_MODEL_NAME)
