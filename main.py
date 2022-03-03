@@ -33,6 +33,8 @@ PRETRAINED_CHECKPOINT_NAME = 'MobilenetV1'
 PRETRAINED_CHECKPOINT_PATH = os.path.join(CHECKPOINT_DIR, '{}.ckpt'.format(PRETRAINED_CHECKPOINT))
 RESULT_MODEL_NAME = '{}_lightspeeur.h5'.format(PRETRAINED_CHECKPOINT)
 RESULT_FOLDED_MODEL_NAME = '{}_lightspeeur_folded.h5'.format(PRETRAINED_CHECKPOINT)
+RESULT_CLIPPED_MODEL_NAME = '{}_lightspeeur_clipped.h5'.format(PRETRAINED_CHECKPOINT)
+RESULT_CLIPPED_FOLDED_MODEL_NAME = '{}_lightspeeur_clipped_folded.h5'.format(PRETRAINED_CHECKPOINT)
 CONVOLUTION_MAP = {
     'Conv2d_0': 'conv1_1',
     'Conv2d_1_depthwise': 'conv2_1_dw',
@@ -71,14 +73,15 @@ filename = wget.download('http://download.tensorflow.org/models/mobilenet_v1_201
 subprocess.run(['tar', '-xvf', filename, '-C', CHECKPOINT_DIR])
 
 
-def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), folded_shape=False, name=None):
+def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), folded_shape=False, clip_bias=False, name=None):
     outputs = Conv2D(units,
                      kernel_size,
                      CHIP_ID,
                      strides=strides,
-                     bit_mask=2,
+                     bit_mask=12,
                      use_bias=folded_shape,
                      quantize=folded_shape,
+                     clip_bias=clip_bias,
                      name='{}/{}'.format(name, 'conv'))(inputs)
     if not folded_shape:
         outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
@@ -86,12 +89,13 @@ def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), folded_shape=F
     return outputs
 
 
-def depthwise_conv_block(inputs, strides=(1, 1), folded_shape=False, name=None):
+def depthwise_conv_block(inputs, strides=(1, 1), folded_shape=False, clip_bias=False, name=None):
     outputs = DepthwiseConv2D(CHIP_ID,
                               strides=strides,
-                              bit_mask=2,
+                              bit_mask=12,
                               use_bias=folded_shape,
                               quantize=folded_shape,
+                              clip_bias=clip_bias,
                               name='{}/{}'.format(name, 'conv'))(inputs)
     if not folded_shape:
         outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
@@ -99,12 +103,12 @@ def depthwise_conv_block(inputs, strides=(1, 1), folded_shape=False, name=None):
     return outputs
 
 
-def build_mobilenet(folded_shape=False):
+def build_mobilenet(folded_shape=False, clip_bias=False):
     inputs = Input(shape=(224, 224, 3))
-    outputs = conv_block(inputs, 32, kernel_size=(3, 3), strides=(2, 2), folded_shape=folded_shape, name='conv1_1')
+    outputs = conv_block(inputs, 32, kernel_size=(3, 3), strides=(2, 2), folded_shape=folded_shape, clip_bias=clip_bias, name='conv1_1')
     for layer in MOBILENET_DEPTHWISE_CONV_LAYERS:
-        outputs = depthwise_conv_block(outputs, (layer.stride, layer.stride), folded_shape=folded_shape, name='{}_dw'.format(layer.name))
-        outputs = conv_block(outputs, layer.out_channels, folded_shape=folded_shape, name='{}_pw'.format(layer.name))
+        outputs = depthwise_conv_block(outputs, (layer.stride, layer.stride), folded_shape=folded_shape, clip_bias=clip_bias, name='{}_dw'.format(layer.name))
+        outputs = conv_block(outputs, layer.out_channels, folded_shape=folded_shape, clip_bias=clip_bias, name='{}_pw'.format(layer.name))
     outputs = GlobalAveragePooling2D(name='global_average_pooling')(outputs)
     outputs = Flatten(name='flatten')(outputs)
     outputs = Dense(1024, activation='relu', name='fc')(outputs)
@@ -116,6 +120,8 @@ def build_mobilenet(folded_shape=False):
 print('Organizing lightspeeur MobileNetV1 model...')
 initial_model = build_mobilenet()
 folded_model = build_mobilenet(folded_shape=True)
+clipped_model = build_mobilenet(clip_bias=True)
+clipped_folded_model = build_mobilenet(folded_shape=True, clip_bias=True)
 
 print('Converting pre-trained TensorFlow checkpoint to Lightspeeur format...')
 
@@ -150,7 +156,11 @@ def load_weights(model, folded_shape=False):
 
 load_weights(initial_model)
 load_weights(folded_model, folded_shape=True)
+load_weights(clipped_model)
+load_weights(clipped_folded_model, folded_shape=True)
 
 initial_model.save(RESULT_MODEL_NAME)
 folded_model.save(RESULT_FOLDED_MODEL_NAME)
+clipped_model.save(RESULT_CLIPPED_MODEL_NAME)
+clipped_folded_model.save(RESULT_CLIPPED_FOLDED_MODEL_NAME)
 print('All jobs have finished')
