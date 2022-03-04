@@ -85,7 +85,7 @@ def conv_block(inputs, units, kernel_size=(1, 1), strides=(1, 1), folded_shape=F
                      name='{}/{}'.format(name, 'conv'))(inputs)
     if not folded_shape:
         outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
-    outputs = ReLU(CHIP_ID, name='{}/{}'.format(name, 'relu'))(outputs)
+    outputs = ReLU(CHIP_ID, quantize=folded_shape, name='{}/{}'.format(name, 'relu'))(outputs)
     return outputs
 
 
@@ -99,7 +99,7 @@ def depthwise_conv_block(inputs, strides=(1, 1), folded_shape=False, clip_bias=F
                               name='{}/{}'.format(name, 'conv'))(inputs)
     if not folded_shape:
         outputs = BatchNormalization(name='{}/{}'.format(name, 'batch_norm'))(outputs)
-    outputs = ReLU(CHIP_ID, name='{}/{}'.format(name, 'relu'))(outputs)
+    outputs = ReLU(CHIP_ID, quantize=folded_shape, name='{}/{}'.format(name, 'relu'))(outputs)
     return outputs
 
 
